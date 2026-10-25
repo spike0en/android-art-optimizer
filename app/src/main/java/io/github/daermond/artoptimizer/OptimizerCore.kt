@@ -107,6 +107,21 @@ fun updatedSinceOptimization(installedVersionCode: Long?, record: OptimizationRe
     installedVersionCode != null && record?.optimizedVersionCode != null &&
         installedVersionCode != record.optimizedVersionCode
 
+fun needsOptimization(installed: InstalledPackage?, record: OptimizationRecord?): Boolean {
+    if (record == null) return true
+    if (record.result != "Success") return false
+    return updatedSinceOptimization(installed?.versionCode, record)
+}
+
+fun pendingPackages(
+    configured: List<PackageId>,
+    installed: List<PackageId>,
+    versions: Map<PackageId, InstalledPackage>,
+    records: Map<PackageId, OptimizationRecord>,
+): List<PackageId> = configured.filter { id ->
+    id in installed && needsOptimization(versions[id], records[id])
+}
+
 data class OptimizationEvent(
     val packageId: PackageId,
     val phase: OptimizationPhase,

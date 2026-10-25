@@ -180,6 +180,9 @@ private fun Page(content: @Composable () -> Unit) {
 
 @Composable
 private fun DevicePage(state: UiState, model: OptimizerViewModel, isTv: Boolean) = Page {
+    val context = LocalContext.current
+    var showPairingOptions by rememberSaveable { mutableStateOf(false) }
+    var settingsUnavailable by rememberSaveable { mutableStateOf(false) }
     Text("Device and connection", style = MaterialTheme.typography.titleLarge)
     state.profile?.let { Text(it.displayName) }
     Text("Network: ${state.network.label}")
@@ -189,13 +192,40 @@ private fun DevicePage(state: UiState, model: OptimizerViewModel, isTv: Boolean)
     if (state.network.hasEthernet) {
         Text("Ethernet is detected automatically. On supported TVs, enable USB debugging in Developer Options and accept Android's authorization prompt for this app. Ethernet ADB is unencrypted; use a trusted local network.")
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        RemoteOutlinedButton(onClick = model::retry) { Text("Retry") }
-        RemoteOutlinedButton(onClick = model::pairAgain,
-            enabled = state.pairingSession.status !in setOf(PairingStatus.STARTING,
-                PairingStatus.READY, PairingStatus.PAIRING)) { Text("Pair Again") }
-    }
-    if (state.connection != ConnectionPhase.CONNECTED) {
+    if (state.connection == ConnectionPhase.CONNECTED) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RemoteOutlinedButton(onClick = model::retry) { Text("Reconnect") }
+            RemoteOutlinedButton(onClick = model::pairAgain,
+                enabled = state.pairingSession.status !in setOf(PairingStatus.STARTING,
+                    PairingStatus.READY, PairingStatus.PAIRING)) { Text("Pair Again") }
+        }
+    } else if (state.isPaired) {
+        if (state.connection == ConnectionPhase.SEARCHING_CONNECT || state.connection == ConnectionPhase.CONNECTING) {
+            CircularProgressIndicator()
+            Text("Reconnecting to Wireless Debugging on this device...")
+        } else {
+            Text("Wireless Debugging is disconnected or turned off. Android automatically disables it after device sleep or network changes.")
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RemoteButton(onClick = model::retry) { Text("Retry") }
+            RemoteOutlinedButton(onClick = {
+                settingsUnavailable = runCatching {
+                    context.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+                }.isFailure
+            }) { Text("Open Developer Options") }
+            RemoteOutlinedButton(onClick = { showPairingOptions = !showPairingOptions }) {
+                Text(if (showPairingOptions) "Hide pairing" else "Pair with new code")
+            }
+        }
+        if (settingsUnavailable) Text("Open Developer Options from Android Settings on this device.")
+        if (showPairingOptions || state.pairingSession.status != PairingStatus.IDLE) {
+            HorizontalDivider()
+            PairingChoices(state, model, isTv)
+        }
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RemoteOutlinedButton(onClick = model::retry) { Text("Retry") }
+        }
         PairingChoices(state, model, isTv)
     }
 }
@@ -285,10 +315,25 @@ private fun AppsPage(state: UiState, model: OptimizerViewModel) = Page {
         label = "Package ID or comma-separated list", minLines = 2)
     RemoteButton(onClick = { model.addPackages(entry); entry = "" }, enabled = entry.isNotBlank()) { Text("Add packages") }
     if (state.entryFeedback.isNotBlank()) Text(state.entryFeedback)
+    val needed = remember(state.configured, state.installed, state.records, state.versions) {
+        pendingPackages(state.configured, state.installed, state.versions, state.records)
+    }
+    val installedConfigured = remember(state.configured, state.installed) {
+        state.configured.filter { it in state.installed }
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        RemoteButton(onClick = { model.optimize(state.configured.filter { it in state.installed }) },
-            enabled = connected && state.compileAvailable && !state.running &&
-                state.configured.any { it in state.installed }) { Text("Optimize All eligible") }
+        RemoteButton(
+            onClick = model::optimizeNeeded,
+            enabled = connected && state.compileAvailable && !state.running && needed.isNotEmpty()
+        ) {
+            Text("Optimize needed (${needed.size})")
+        }
+        RemoteOutlinedButton(
+            onClick = { model.optimize(installedConfigured) },
+            enabled = connected && state.compileAvailable && !state.running && installedConfigured.isNotEmpty()
+        ) {
+            Text("Optimize all (${installedConfigured.size})")
+        }
         RemoteOutlinedButton(onClick = model::refreshApps, enabled = connected) { Text("Refresh") }
     }
     state.activeEvent?.let { event ->
@@ -318,7 +363,13 @@ private fun AppsPage(state: UiState, model: OptimizerViewModel) = Page {
                 if (record != null) {
                     Text("Last: ${record.result} • " +
                         DateFormat.getDateTimeInstance().format(Date(record.timestampMillis)))
-                    if (record.result == "Success") Text("Validation: ${record.validationLevel}")
+                    if (record.result == "Success") {
+                        val validationDescription = when (record.validationLevel) {
+                            ValidationLevel.ART_STATE -> "Verified via ART runtime status"
+                            ValidationLevel.COMMAND -> "Verified via package compiler exit status"
+                        }
+                        Text("Validation: $validationDescription")
+                    }
                     if (record.lastSuccessfulAtMillis != null && record.lastSuccessfulAtMillis != record.timestampMillis)
                         Text("Last successful optimization: " + DateFormat.getDateTimeInstance()
                             .format(Date(record.lastSuccessfulAtMillis)))

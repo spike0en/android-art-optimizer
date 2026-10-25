@@ -150,6 +150,36 @@ class OptimizerCoreTest {
         assertFalse(a.copy(stableId = null).matches(b.copy(stableId = null, model = "Phone")))
     }
 
+    @Test fun needsOptimizationFollowsBatchEligibilityRules() {
+        val installed = InstalledPackage(target, 10L, "1.0")
+        assertTrue(needsOptimization(installed, null))
+        val successSameVersion = OptimizationRecord(target, 10L, "speed", 100L, "Success", ValidationLevel.COMMAND)
+        assertFalse(needsOptimization(installed, successSameVersion))
+        val updatedApp = InstalledPackage(target, 11L, "1.1")
+        assertTrue(needsOptimization(updatedApp, successSameVersion))
+        val failedRecord = OptimizationRecord(target, 10L, "speed", 100L, "Compilation failed", ValidationLevel.COMMAND)
+        assertFalse(needsOptimization(installed, failedRecord))
+        val skippedRecord = OptimizationRecord(target, null, "speed", 100L, "Package is not installed", ValidationLevel.COMMAND)
+        assertFalse(needsOptimization(installed, skippedRecord))
+    }
+
+    @Test fun pendingPackagesFiltersConfiguredInstalledNeedingOptimization() {
+        val other = requireNotNull(PackageId.parse("app.other"))
+        val notInstalled = requireNotNull(PackageId.parse("app.missing"))
+        val configured = listOf(target, other, notInstalled)
+        val installed = listOf(target, other)
+        val versions = mapOf(
+            target to InstalledPackage(target, 10L, "1.0"),
+            other to InstalledPackage(other, 20L, "2.0"),
+        )
+        val records = mapOf(
+            target to OptimizationRecord(target, 10L, "speed", 100L, "Success", ValidationLevel.COMMAND),
+        )
+        assertEquals(listOf(other), pendingPackages(configured, installed, versions, records))
+        val recordsAllDone = records + (other to OptimizationRecord(other, 20L, "speed", 100L, "Success", ValidationLevel.ART_STATE))
+        assertEquals(emptyList<PackageId>(), pendingPackages(configured, installed, versions, recordsAllDone))
+    }
+
     private class FakeShell(
         private val missing: Boolean = false,
         private val compileFails: Boolean = false,

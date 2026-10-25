@@ -48,6 +48,7 @@ data class UiState(
     val consoleOutput: String = "",
     val consoleResult: String = "",
     val consoleHistory: List<String> = emptyList(),
+    val isPaired: Boolean = false,
 )
 
 class OptimizerViewModel(application: Application) : AndroidViewModel(application) {
@@ -62,6 +63,7 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
         profile = persistence.profile(),
         consoleWarningAccepted = persistence.consoleWarningAccepted,
         consoleHistory = persistence.history(),
+        isPaired = persistence.paired && transport.hasCredential,
     ))
     val state: StateFlow<UiState> = mutable.asStateFlow()
     private var connectionJob: Job? = null
@@ -85,7 +87,10 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             PairingSessionStore.state.collect { session ->
                 mutable.update { it.copy(pairingSession = session) }
-                if (session.status == PairingStatus.PAIRED) retry()
+                if (session.status == PairingStatus.PAIRED) {
+                    mutable.update { it.copy(isPaired = true) }
+                    retry()
+                }
             }
         }
         viewModelScope.launch {
@@ -185,7 +190,7 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
                 persistence.saveProfile(profile)
                 persistence.paired = true
                 mutable.update { it.copy(connection = ConnectionPhase.CONNECTED, profile = profile,
-                    endpoint = endpoint,
+                    endpoint = endpoint, isPaired = true,
                     detail = "Connected over ${LocalConnectionPolicy.connectionLabel(endpoint, transport.network.value)}; " +
                         if (profile.strongIdentity) "device identity verified" else "model-based identity check only") }
                 probeCapabilities().join()
@@ -223,7 +228,7 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
         mutable.update { it.copy(connection = ConnectionPhase.NOT_PAIRED, profile = null,
-            endpoint = null,
+            endpoint = null, isPaired = false,
             compileAvailable = false, artAvailable = false, shellUid = "", installed = emptyList(),
             detail = "Choose a pairing method below, then open the Wireless Debugging pairing-code dialog.") }
         if (transport.network.value.hasEthernet) retry()
@@ -324,6 +329,20 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
                 mutable.update { it.copy(running = false) }
             }
         }
+    }
+
+    fun optimizeNeeded() {
+        val pending = pendingPackages(
+            mutable.value.configured,
+            mutable.value.installed,
+            mutable.value.versions,
+            mutable.value.records,
+        )
+        if (pending.isEmpty()) {
+            mutable.update { it.copy(entryFeedback = "All configured packages are up to date") }
+            return
+        }
+        optimize(pending)
     }
 
     fun acceptConsoleWarning() {
