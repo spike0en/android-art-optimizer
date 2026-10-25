@@ -15,6 +15,21 @@ class AppPersistence(context: Context) {
         get() = preferences.getBoolean("console_warning", false)
         set(value) { preferences.edit().putBoolean("console_warning", value).apply() }
 
+    var darkMode: Boolean?
+        get() = when (preferences.getString("dark_mode", "system")) {
+            "dark" -> true
+            "light" -> false
+            else -> null
+        }
+        set(value) {
+            val string = when (value) {
+                true -> "dark"
+                false -> "light"
+                null -> "system"
+            }
+            preferences.edit().putString("dark_mode", string).apply()
+        }
+
     fun packages(): List<PackageId> = readArray("packages")
         .mapNotNull { PackageId.parse(it) }
         .distinct()
@@ -87,7 +102,8 @@ class AppPersistence(context: Context) {
                 val item = array.getJSONObject(index)
                 val id = PackageId.parse(item.getString("packageId")) ?: continue
                 put(id, InstalledPackage(id, item.optLong("version", -1).takeIf { it >= 0 },
-                    item.optString("name").takeIf(String::isNotBlank)))
+                    item.optString("name").takeIf(String::isNotBlank),
+                    item.optString("filter").takeIf(String::isNotBlank)))
             }
         }
     }.getOrDefault(emptyMap())
@@ -97,7 +113,8 @@ class AppPersistence(context: Context) {
         versions.values.forEach { version ->
             array.put(JSONObject().put("packageId", version.id.value)
                 .put("version", version.versionCode ?: -1L)
-                .put("name", version.versionName ?: ""))
+                .put("name", version.versionName ?: "")
+                .put("filter", version.compilerFilter ?: ""))
         }
         preferences.edit().putString("seen_versions", array.toString()).apply()
     }

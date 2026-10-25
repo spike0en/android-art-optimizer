@@ -13,9 +13,17 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathOperation
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -47,6 +55,26 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 
+private val AmoledDarkColorScheme = darkColorScheme(
+    primary = ComposeColor(0xFFD0BCFF),
+    onPrimary = ComposeColor(0xFF381E72),
+    primaryContainer = ComposeColor(0xFF4F378B),
+    onPrimaryContainer = ComposeColor(0xFFEADDFF),
+    secondary = ComposeColor(0xFFCCC2DC),
+    onSecondary = ComposeColor(0xFF332D41),
+    background = ComposeColor(0xFF000000),
+    onBackground = ComposeColor(0xFFE6E1E5),
+    surface = ComposeColor(0xFF000000),
+    onSurface = ComposeColor(0xFFE6E1E5),
+    surfaceVariant = ComposeColor(0xFF141414),
+    onSurfaceVariant = ComposeColor(0xFFCAC4D0),
+    surfaceContainer = ComposeColor(0xFF101010),
+    surfaceContainerHigh = ComposeColor(0xFF1A1A1A),
+    surfaceContainerHighest = ComposeColor(0xFF222222),
+    outline = ComposeColor(0xFF444444),
+    outlineVariant = ComposeColor(0xFF282828),
+)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,10 +90,28 @@ private fun OptimizerApp(model: OptimizerViewModel = viewModel()) {
         Configuration.UI_MODE_TYPE_TELEVISION
     val tabFocus = remember { List(4) { FocusRequester() } }
     LaunchedEffect(isTv, tab) { if (isTv) tabFocus[tab].requestFocus() }
-    MaterialTheme {
-        Surface(modifier = Modifier.fillMaxSize()) {
+    val systemDark = isSystemInDarkTheme() || isTv
+    val isDark = when (state.darkMode) {
+        true -> true
+        false -> false
+        null -> systemDark
+    }
+    val colorScheme = if (isDark) AmoledDarkColorScheme else lightColorScheme()
+    MaterialTheme(colorScheme = colorScheme) {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize().safeDrawingPadding().padding(if (isTv) 32.dp else 16.dp)) {
-                Text("Android ART Optimizer", style = MaterialTheme.typography.headlineSmall)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                ) {
+                    Text("Android ART Optimizer", style = MaterialTheme.typography.headlineSmall)
+                    RemoteIconButton(
+                        onClick = { model.toggleTheme(isDark) },
+                    ) {
+                        ThemeToggleIcon(isDark = isDark)
+                    }
+                }
                 val endpoint = state.endpoint
                 Text(if (state.connection == ConnectionPhase.CONNECTED && endpoint != null)
                     "Connected over ${LocalConnectionPolicy.connectionLabel(endpoint, state.network)}"
@@ -81,7 +127,7 @@ private fun OptimizerApp(model: OptimizerViewModel = viewModel()) {
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 when (tab) {
                     0 -> DevicePage(state, model, isTv)
-                    1 -> AppsPage(state, model)
+                    1 -> AppsPage(state, model, isDark)
                     2 -> DiagnosticsPage(state, model)
                     else -> ConsolePage(state, model)
                 }
@@ -119,6 +165,66 @@ private fun RemoteOutlinedButton(
     content: @Composable RowScope.() -> Unit,
 ) = OutlinedButton(onClick = onClick, modifier = modifier.then(remoteFocusModifier()),
     enabled = enabled, content = content)
+
+@Composable
+private fun RemoteIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    IconButton(
+        onClick = onClick,
+        modifier = modifier
+            .onFocusChanged { focused = it.isFocused }
+            .border(
+                if (focused) 3.dp else 0.dp,
+                if (focused) ComposeColor(0xFFFFD54F) else ComposeColor.Transparent,
+                CircleShape
+            )
+            .size(44.dp),
+        enabled = enabled,
+        content = content
+    )
+}
+
+@Composable
+private fun ThemeToggleIcon(isDark: Boolean, tint: ComposeColor = MaterialTheme.colorScheme.onSurface) {
+    Canvas(modifier = Modifier.size(24.dp)) {
+        val size = this.size.minDimension
+        val center = Offset(size / 2f, size / 2f)
+        if (isDark) {
+            val r = size * 0.22f
+            drawCircle(color = tint, radius = r, center = center)
+            for (i in 0 until 8) {
+                val angle = (i * Math.PI / 4.0).toFloat()
+                val cos = kotlin.math.cos(angle)
+                val sin = kotlin.math.sin(angle)
+                val start = Offset(center.x + cos * size * 0.34f, center.y + sin * size * 0.34f)
+                val end = Offset(center.x + cos * size * 0.46f, center.y + sin * size * 0.46f)
+                drawLine(
+                    color = tint,
+                    start = start,
+                    end = end,
+                    strokeWidth = 2.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+        } else {
+            val mainCircle = Path().apply {
+                addOval(Rect(center = center, radius = size * 0.42f))
+            }
+            val cutCircle = Path().apply {
+                addOval(Rect(center = Offset(center.x + size * 0.22f, center.y - size * 0.18f), radius = size * 0.36f))
+            }
+            val moon = Path().apply {
+                op(mainCircle, cutCircle, PathOperation.Difference)
+            }
+            drawPath(moon, color = tint)
+        }
+    }
+}
 
 /** On TV, text entry is an explicit Select action instead of a stop in the D-pad path. */
 @Composable
@@ -206,7 +312,7 @@ private fun DevicePage(state: UiState, model: OptimizerViewModel, isTv: Boolean)
         } else {
             Text("Wireless Debugging is disconnected or turned off. Android automatically disables it after device sleep or network changes.")
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             RemoteButton(onClick = model::retry) { Text("Retry") }
             RemoteOutlinedButton(onClick = {
                 settingsUnavailable = runCatching {
@@ -306,7 +412,7 @@ private fun PairingQr(url: String) {
 }
 
 @Composable
-private fun AppsPage(state: UiState, model: OptimizerViewModel) = Page {
+private fun AppsPage(state: UiState, model: OptimizerViewModel, isDark: Boolean) = Page {
     val connected = state.connection == ConnectionPhase.CONNECTED
     val context = LocalContext.current
     Text("Configured applications", style = MaterialTheme.typography.titleLarge)
@@ -321,7 +427,7 @@ private fun AppsPage(state: UiState, model: OptimizerViewModel) = Page {
     val installedConfigured = remember(state.configured, state.installed) {
         state.configured.filter { it in state.installed }
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         RemoteButton(
             onClick = model::optimizeNeeded,
             enabled = connected && state.compileAvailable && !state.running && needed.isNotEmpty()
@@ -354,12 +460,18 @@ private fun AppsPage(state: UiState, model: OptimizerViewModel) = Page {
                 context.packageManager.getApplicationLabel(info).toString()
             }.getOrNull()?.takeUnless { it == id.value }
         }
-        Card(Modifier.fillMaxWidth()) {
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = if (isDark) ComposeColor(0xFF121212) else MaterialTheme.colorScheme.surfaceVariant)) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (label != null) Text(label, style = MaterialTheme.typography.titleMedium)
                 Text(id.value, style = MaterialTheme.typography.titleMedium)
                 Text(if (id in state.installed) "Installed • ${installed?.versionName ?: "version unknown"}"
                     else "Missing / not installed")
+                val liveFilter = installed?.compilerFilter
+                if (liveFilter != null) {
+                    val filterDescription = if (liveFilter == "speed") "Compiler status: speed (optimized)"
+                        else "Compiler status: $liveFilter"
+                    Text(filterDescription)
+                }
                 if (record != null) {
                     Text("Last: ${record.result} • " +
                         DateFormat.getDateTimeInstance().format(Date(record.timestampMillis)))
@@ -391,11 +503,18 @@ private fun AppsPage(state: UiState, model: OptimizerViewModel) = Page {
     if (!connected) Text("Connect to discover installed applications.")
     var filter by rememberSaveable { mutableStateOf("") }
     AppTextInput(value = filter, onValueChange = { filter = it }, label = "Filter packages")
-    state.installed.filter { it !in state.configured && it.value.contains(filter, ignoreCase = true) }
-        .take(100).forEach { id ->
-            RemoteOutlinedButton(onClick = { model.addPackages(id.value) }) { Text("Add ${id.value}") }
+    val unconfigured = remember(state.installed, state.configured, filter) {
+        state.installed.filter { it !in state.configured && it.value.contains(filter, ignoreCase = true) }
+    }
+    if (unconfigured.isNotEmpty()) {
+        RemoteOutlinedButton(onClick = { model.addPackages(unconfigured.joinToString(",") { it.value }) }) {
+            Text("Add all ${if (filter.isNotBlank()) "filtered" else "third-party"} (${unconfigured.size})")
         }
-    if (state.installed.size > 100) Text("Showing up to 100 results. Filter to narrow the list.")
+    }
+    unconfigured.take(100).forEach { id ->
+        RemoteOutlinedButton(onClick = { model.addPackages(id.value) }) { Text("Add ${id.value}") }
+    }
+    if (unconfigured.size > 100) Text("Showing up to 100 results. Filter to narrow the list.")
 }
 
 @Composable

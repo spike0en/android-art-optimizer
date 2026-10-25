@@ -65,7 +65,7 @@ interface ConsoleShell {
     suspend fun shellRaw(command: String): ShellResult
 }
 
-data class InstalledPackage(val id: PackageId, val versionCode: Long?, val versionName: String?)
+data class InstalledPackage(val id: PackageId, val versionCode: Long?, val versionName: String?, val compilerFilter: String? = null)
 
 object PackageOutputParser {
     private val versionCode = Regex("\\bversionCode=(\\d+)")
@@ -82,9 +82,17 @@ object PackageOutputParser {
         versionCode.find(output)?.groupValues?.get(1)?.toLongOrNull() to
             versionName.find(output)?.groupValues?.get(1)
 
+    private val statusRegex = Regex("(?:\\[|\\b)status=([^]\\s]+)")
+    private val compilerFilterRegex = Regex("(?im)compiler.?filter\\s*[:=]\\s*([^\\s]+)")
+
+    fun compilerFilter(output: String): String? {
+        val statuses = statusRegex.findAll(output).map { it.groupValues[1] }.toList()
+        if (statuses.isNotEmpty()) return if (statuses.all { it == "speed" }) "speed" else statuses.first()
+        return compilerFilterRegex.find(output)?.groupValues?.get(1)
+    }
+
     fun artReportsSpeed(output: String): Boolean {
-        val statuses = Regex("(?:\\[|\\b)status=([^]\\s]+)").findAll(output)
-            .map { it.groupValues[1] }.toList()
+        val statuses = statusRegex.findAll(output).map { it.groupValues[1] }.toList()
         if (statuses.isNotEmpty()) return statuses.all { it == "speed" }
         return Regex("(?im)compiler.?filter\\s*[:=]\\s*speed(?:\\s|$)").containsMatchIn(output)
     }
@@ -108,6 +116,7 @@ fun updatedSinceOptimization(installedVersionCode: Long?, record: OptimizationRe
         installedVersionCode != record.optimizedVersionCode
 
 fun needsOptimization(installed: InstalledPackage?, record: OptimizationRecord?): Boolean {
+    if (installed?.compilerFilter == "speed") return false
     if (record == null) return true
     if (record.result != "Success") return false
     return updatedSinceOptimization(installed?.versionCode, record)

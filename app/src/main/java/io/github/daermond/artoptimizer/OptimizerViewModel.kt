@@ -49,6 +49,7 @@ data class UiState(
     val consoleResult: String = "",
     val consoleHistory: List<String> = emptyList(),
     val isPaired: Boolean = false,
+    val darkMode: Boolean? = null,
 )
 
 class OptimizerViewModel(application: Application) : AndroidViewModel(application) {
@@ -64,6 +65,7 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
         consoleWarningAccepted = persistence.consoleWarningAccepted,
         consoleHistory = persistence.history(),
         isPaired = persistence.paired && transport.hasCredential,
+        darkMode = persistence.darkMode,
     ))
     val state: StateFlow<UiState> = mutable.asStateFlow()
     private var connectionJob: Job? = null
@@ -250,7 +252,8 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
                             installedConfigured += id
                             val dump = transport.shell(SafeAdbCommand.PackageDump(id))
                             val (code, name) = PackageOutputParser.version(dump.stdout)
-                            put(id, InstalledPackage(id, code, name))
+                            val filter = PackageOutputParser.compilerFilter(dump.stdout)
+                            put(id, InstalledPackage(id, code, name, filter))
                         }
                     }
                 }
@@ -343,6 +346,12 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
         optimize(pending)
+    }
+
+    fun toggleTheme(isDark: Boolean) {
+        val next = !isDark
+        persistence.darkMode = next
+        mutable.update { it.copy(darkMode = next) }
     }
 
     fun acceptConsoleWarning() {

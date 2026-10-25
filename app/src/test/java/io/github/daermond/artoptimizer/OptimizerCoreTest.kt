@@ -29,6 +29,9 @@ class OptimizerCoreTest {
         assertFalse(PackageOutputParser.artReportsSpeed("arm64: [status=speed-profile]"))
         assertFalse(PackageOutputParser.artReportsSpeed("arm64: [status=speed]\nsecondary: [status=verify]"))
         assertFalse(PackageOutputParser.artReportsSpeed("help: use speed to compile"))
+        assertEquals("speed", PackageOutputParser.compilerFilter("arm64: [status=speed] [reason=cmdline]"))
+        assertEquals("speed-profile", PackageOutputParser.compilerFilter("arm64: [status=speed-profile] [reason=bg-dexopt]"))
+        assertEquals("verify", PackageOutputParser.compilerFilter("arm64: [status=verify] [reason=vdex]"))
     }
 
     @Test fun compileCapabilityAcceptsHelpUsageDespiteNonzeroHelpExit() {
@@ -153,6 +156,10 @@ class OptimizerCoreTest {
     @Test fun needsOptimizationFollowsBatchEligibilityRules() {
         val installed = InstalledPackage(target, 10L, "1.0")
         assertTrue(needsOptimization(installed, null))
+        val liveSpeed = InstalledPackage(target, 10L, "1.0", "speed")
+        assertFalse(needsOptimization(liveSpeed, null))
+        val liveVerify = InstalledPackage(target, 10L, "1.0", "verify")
+        assertTrue(needsOptimization(liveVerify, null))
         val successSameVersion = OptimizationRecord(target, 10L, "speed", 100L, "Success", ValidationLevel.COMMAND)
         assertFalse(needsOptimization(installed, successSameVersion))
         val updatedApp = InstalledPackage(target, 11L, "1.1")
