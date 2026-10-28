@@ -1,6 +1,11 @@
 package io.github.daermond.artoptimizer
 
+import android.Manifest
 import android.app.Application
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.flyfishxu.kadb.mdns.MdnsEndpoint
@@ -38,6 +43,8 @@ data class UiState(
     val records: Map<PackageId, OptimizationRecord> = emptyMap(),
     val activeEvent: OptimizationEvent? = null,
     val running: Boolean = false,
+    val scanningArtState: Boolean = false,
+    val scanProgress: Pair<Int, Int>? = null,
     val entryFeedback: String = "",
     val compileAvailable: Boolean = false,
     val artAvailable: Boolean = false,
@@ -50,6 +57,7 @@ data class UiState(
     val consoleHistory: List<String> = emptyList(),
     val isPaired: Boolean = false,
     val darkMode: Boolean? = null,
+    val secureSettingsGranted: Boolean = false,
 )
 
 class OptimizerViewModel(application: Application) : AndroidViewModel(application) {
@@ -57,8 +65,19 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
     private val persistence = AppPersistence(application)
     private val optimizer = ArtOptimizer(transport)
     private val self = requireNotNull(PackageId.parse(application.packageName))
+
+    private fun isUserApp(id: PackageId): Boolean {
+        if (id == self) return false
+        return runCatching {
+            val appInfo = getApplication<Application>().packageManager.getApplicationInfo(id.value, 0)
+            val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+            val isUpdatedSystem = (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+            !isSystem && !isUpdatedSystem
+        }.getOrDefault(false)
+    }
+
     private val mutable = MutableStateFlow(UiState(
-        configured = persistence.packages(),
+        configured = persistence.packages().filter(::isUserApp),
         records = persistence.records(),
         versions = persistence.seenVersions(),
         profile = persistence.profile(),
@@ -66,6 +85,7 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
         consoleHistory = persistence.history(),
         isPaired = persistence.paired && transport.hasCredential,
         darkMode = persistence.darkMode,
+        secureSettingsGranted = application.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED,
     ))
     val state: StateFlow<UiState> = mutable.asStateFlow()
     private var connectionJob: Job? = null
@@ -76,6 +96,15 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
     private var recoveryJob: Job? = null
 
     init {
+        tryEnableWirelessDebuggingIfAuthorized()
+        val cleaned = persistence.packages().filter(::isUserApp)
+        if (cleaned.size != persistence.packages().size) {
+            persistence.savePackages(cleaned)
+        }
+        val (localPackages, localVersions) = loadLocalInstalledInfo()
+        if (localPackages.isNotEmpty()) {
+            mutable.update { it.copy(configured = cleaned, installed = localPackages, versions = localVersions + it.versions) }
+        }
         transport.startDiscovery()
         viewModelScope.launch {
             transport.discovery.collect { found ->
@@ -108,8 +137,63 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
                 if (action != NetworkRecovery.KEEP) networkChanged(action)
             }
         }
-        if ((persistence.paired && transport.hasCredential) || transport.network.value.hasEthernet) retry()
-        else mutable.update { it.copy(connection = ConnectionPhase.NOT_PAIRED) }
+        if ((persistence.paired && transport.hasCredential) || transport.network.value.hasEthernet) {
+            tryEnableWirelessDebuggingIfAuthorized()
+            retry()
+        } else mutable.update { it.copy(connection = ConnectionPhase.NOT_PAIRED) }
+    }
+
+    private fun tryEnableWirelessDebuggingIfAuthorized() {
+        val app = getApplication<Application>()
+        try {
+            if (app.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED) {
+                val enabled = Settings.Global.getInt(app.contentResolver, "adb_wifi_enabled", 0)
+                if (enabled == 0) {
+                    Settings.Global.putInt(app.contentResolver, "adb_wifi_enabled", 1)
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun tryDisableWirelessDebuggingIfAuthorized() {
+        val app = getApplication<Application>()
+        try {
+            if (app.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED) {
+                Settings.Global.putInt(app.contentResolver, "adb_wifi_enabled", 0)
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun loadLocalInstalledInfo(): Pair<List<PackageId>, Map<PackageId, InstalledPackage>> {
+        val pm = getApplication<Application>().packageManager
+        return runCatching {
+            val packages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(0))
+            } else {
+                pm.getInstalledPackages(0)
+            }
+            val ids = mutableListOf<PackageId>()
+            val versions = mutableMapOf<PackageId, InstalledPackage>()
+            for (info in packages) {
+                val appInfo = info.applicationInfo ?: continue
+                val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                val isUpdatedSystem = (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+                if (!isSystem && !isUpdatedSystem) {
+                    val id = PackageId.parse(info.packageName) ?: continue
+                    if (id == self) continue
+                    ids += id
+                    val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        info.longVersionCode
+                    } else {
+                        @Suppress("DEPRECATION")
+                        info.versionCode.toLong()
+                    }
+                    val name = info.versionName.orEmpty().ifBlank { "unknown" }
+                    versions[id] = InstalledPackage(id, code, name, compilerFilter = null)
+                }
+            }
+            ids to versions
+        }.getOrDefault(emptyList<PackageId>() to emptyMap())
     }
 
     private fun networkChanged(action: NetworkRecovery) {
@@ -137,6 +221,7 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun retry() {
         if (mutable.value.running || mutable.value.consoleRunning) return
+        tryEnableWirelessDebuggingIfAuthorized()
         refreshJob?.cancel()
         capabilityJob?.cancel()
         transport.disconnect()
@@ -160,6 +245,7 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private suspend fun connectToDiscovered(saved: DeviceProfile?) {
+        tryEnableWirelessDebuggingIfAuthorized()
         val wired = transport.network.value.hasEthernet
         mutable.update { it.copy(connection = ConnectionPhase.SEARCHING_CONNECT, endpoint = null,
             detail = if (wired) "Ethernet detected. Enable USB debugging on TVs that use it for network ADB, and accept Android's authorization prompt if shown."
@@ -211,6 +297,25 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
                 else "Could not authenticate. Retry or Pair Again if authorization was revoked.") }
     }
 
+    fun disconnectAndTurnOffWirelessDebugging() {
+        recoveryJob?.cancel()
+        connectionJob?.cancel()
+        refreshJob?.cancel()
+        capabilityJob?.cancel()
+        optimizationJob?.cancel()
+        consoleJob?.cancel()
+        transport.disconnect()
+        tryDisableWirelessDebuggingIfAuthorized()
+        mutable.update { it.copy(
+            connection = ConnectionPhase.UNAVAILABLE,
+            endpoint = null,
+            compileAvailable = false,
+            artAvailable = false,
+            shellUid = "",
+            detail = "Disconnected. Wireless debugging turned off."
+        ) }
+    }
+
     fun pairAgain() {
         recoveryJob?.cancel()
         stopPairing()
@@ -229,9 +334,11 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
                 detail = "Could not clear the pairing credential. Retry Pair Again.") }
             return
         }
+        val (localPackages, localVersions) = loadLocalInstalledInfo()
         mutable.update { it.copy(connection = ConnectionPhase.NOT_PAIRED, profile = null,
             endpoint = null, isPaired = false,
-            compileAvailable = false, artAvailable = false, shellUid = "", installed = emptyList(),
+            compileAvailable = false, artAvailable = false, shellUid = "", installed = localPackages,
+            versions = localVersions,
             detail = "Choose a pairing method below, then open the Wireless Debugging pairing-code dialog.") }
         if (transport.network.value.hasEthernet) retry()
     }
@@ -239,28 +346,51 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
     fun refreshApps(): Job {
         refreshJob?.takeIf { it.isActive }?.let { return it }
         return viewModelScope.launch {
+            val (localPackages, localVersions) = loadLocalInstalledInfo()
+            if (localPackages.isNotEmpty()) {
+                mutable.update { it.copy(
+                    installed = localPackages,
+                    versions = localVersions + it.versions
+                ) }
+            }
             if (mutable.value.connection != ConnectionPhase.CONNECTED) return@launch
             try {
                 val response = transport.shell(SafeAdbCommand.ListThirdPartyPackages)
-                if (!response.succeeded) throw IllegalStateException()
-                val discovered = PackageOutputParser.thirdPartyPackages(response.stdout)
-                val installedConfigured = mutableListOf<PackageId>()
-                val versions = buildMap {
-                    for (id in mutable.value.configured) {
-                        val path = transport.shell(SafeAdbCommand.PackagePath(id))
-                        if (path.succeeded && path.stdout.contains("package:")) {
-                            installedConfigured += id
-                            val dump = transport.shell(SafeAdbCommand.PackageDump(id))
+                val discovered = if (response.succeeded) {
+                    PackageOutputParser.thirdPartyPackages(response.stdout).filter(::isUserApp)
+                } else emptyList()
+                val cleanInstalled = (localPackages + discovered).distinct().filter(::isUserApp)
+                val cleanConfigured = mutable.value.configured.filter(::isUserApp)
+                if (cleanConfigured.size != mutable.value.configured.size) {
+                    persistence.savePackages(cleanConfigured)
+                }
+                val toScan = cleanConfigured.filter { id -> id in cleanInstalled }
+                if (toScan.isNotEmpty()) {
+                    mutable.update { it.copy(scanningArtState = true, scanProgress = 0 to toScan.size) }
+                }
+                val versions = mutable.value.versions.toMutableMap()
+                toScan.forEachIndexed { index, id ->
+                    try {
+                        val dump = transport.shell(SafeAdbCommand.PackageDump(id))
+                        if (dump.succeeded) {
                             val (code, name) = PackageOutputParser.version(dump.stdout)
                             val filter = PackageOutputParser.compilerFilter(dump.stdout)
-                            put(id, InstalledPackage(id, code, name, filter))
+                            versions[id] = InstalledPackage(id, code, name, filter)
                         }
-                    }
+                    } catch (_: Exception) {}
+                    mutable.update { it.copy(
+                        scanProgress = (index + 1) to toScan.size,
+                        versions = versions.toMap()
+                    ) }
                 }
                 persistence.saveSeenVersions(versions)
-                mutable.update { current -> if (current.connection == ConnectionPhase.CONNECTED)
-                    current.copy(installed = (discovered + installedConfigured).distinct(), versions = versions)
-                    else current }
+                mutable.update { current ->
+                    current.copy(
+                        installed = cleanInstalled,
+                        configured = cleanConfigured,
+                        versions = versions
+                    )
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (lost: AdbConnectionException) {
@@ -268,6 +398,8 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (_: Exception) {
                 mutable.update { current -> if (current.connection == ConnectionPhase.CONNECTED)
                     current.copy(detail = "Connected, but package discovery failed. Retry refresh.") else current }
+            } finally {
+                mutable.update { it.copy(scanningArtState = false, scanProgress = null) }
             }
         }.also { refreshJob = it }
     }
@@ -278,10 +410,17 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
             // OEMs may support dump while rejecting the undocumented `art help` sub-command.
             val art = transport.shell(SafeAdbCommand.ArtDump(self))
             val uid = transport.shell(SafeAdbCommand.ShellUid).stdout.trim()
+            val app = getApplication<Application>()
+            var secureGranted = app.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+            if (!secureGranted) {
+                transport.shell(SafeAdbCommand.GrantSecureSettings)
+                secureGranted = app.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+            }
             mutable.update { if (it.connection != ConnectionPhase.CONNECTED) it else it.copy(
                 compileAvailable = CapabilityProbe.supportsCompile(compile),
                 artAvailable = art.succeeded,
                 shellUid = uid.take(20),
+                secureSettingsGranted = secureGranted,
             ) }
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -297,10 +436,11 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun addPackages(raw: String) {
         val parsed = PackageIdParser.parseCsv(raw)
-        val combined = (mutable.value.configured + parsed.valid).distinct()
+        val valid = parsed.valid.filter(::isUserApp)
+        val combined = (mutable.value.configured.filter(::isUserApp) + valid).distinct()
         persistence.savePackages(combined)
         mutable.update { it.copy(configured = combined,
-            entryFeedback = if (parsed.invalid.isEmpty()) "Added ${parsed.valid.size} valid package(s)"
+            entryFeedback = if (parsed.invalid.isEmpty()) "Added ${valid.size} valid package(s)"
                 else "Rejected: ${parsed.invalid.joinToString().take(180)}") }
         refreshApps()
     }
@@ -309,6 +449,12 @@ class OptimizerViewModel(application: Application) : AndroidViewModel(applicatio
         val remaining = mutable.value.configured - id
         persistence.savePackages(remaining)
         mutable.update { it.copy(configured = remaining) }
+    }
+
+    fun clearConfigured() {
+        if (mutable.value.running) return
+        persistence.savePackages(emptyList())
+        mutable.update { it.copy(configured = emptyList()) }
     }
 
     fun optimize(ids: List<PackageId>) {

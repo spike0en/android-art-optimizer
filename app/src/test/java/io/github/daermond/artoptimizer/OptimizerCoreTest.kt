@@ -15,6 +15,8 @@ class OptimizerCoreTest {
         assertEquals("cmd package compile -m speed -f app.smarttube",
             SafeCommandRenderer.render(SafeAdbCommand.CompileSpeed(target)))
         assertEquals("pm art dump app.smarttube", SafeCommandRenderer.render(SafeAdbCommand.ArtDump(target)))
+        assertEquals("pm grant io.github.daermond.artoptimizer android.permission.WRITE_SECURE_SETTINGS",
+            SafeCommandRenderer.render(SafeAdbCommand.GrantSecureSettings))
         assertNull(PackageId.parse("app.smarttube; id"))
     }
 

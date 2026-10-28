@@ -21,6 +21,7 @@ sealed interface SafeAdbCommand {
     data class ForceStop(val packageId: PackageId) : SafeAdbCommand
     data class CompileSpeed(val packageId: PackageId) : SafeAdbCommand
     data class ArtDump(val packageId: PackageId) : SafeAdbCommand
+    data object GrantSecureSettings : SafeAdbCommand
 }
 
 object SafeCommandRenderer {
@@ -40,6 +41,7 @@ object SafeCommandRenderer {
         is SafeAdbCommand.ForceStop -> "am force-stop ${command.packageId.value}"
         is SafeAdbCommand.CompileSpeed -> "cmd package compile -m speed -f ${command.packageId.value}"
         is SafeAdbCommand.ArtDump -> "pm art dump ${command.packageId.value}"
+        SafeAdbCommand.GrantSecureSettings -> "pm grant io.github.daermond.artoptimizer android.permission.WRITE_SECURE_SETTINGS"
     }
 }
 

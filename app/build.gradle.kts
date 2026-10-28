@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.daermond.artoptimizer"
         minSdk = 30
         targetSdk = 35
-        versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-        versionName = System.getenv("VERSION_NAME") ?: "0.2.0-dev"
+        versionCode = (System.getenv("VERSION_CODE") ?: "2").toInt()
+        versionName = System.getenv("VERSION_NAME") ?: "0.3.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

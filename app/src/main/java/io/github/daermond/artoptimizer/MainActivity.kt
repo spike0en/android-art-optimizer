@@ -9,36 +9,39 @@ import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.border
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathOperation
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathOperation
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -48,12 +51,12 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.delay
-import java.text.DateFormat
-import java.util.Date
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import kotlinx.coroutines.delay
+import java.text.DateFormat
+import java.util.Date
 
 private val AmoledDarkColorScheme = darkColorScheme(
     primary = ComposeColor(0xFFD0BCFF),
@@ -96,14 +99,29 @@ private fun OptimizerApp(model: OptimizerViewModel = viewModel()) {
         false -> false
         null -> systemDark
     }
-    val colorScheme = if (isDark) AmoledDarkColorScheme else lightColorScheme()
+
+    val context = LocalContext.current
+    val supportsDynamic = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val colorScheme = when {
+        supportsDynamic && isDark -> dynamicDarkColorScheme(context).copy(
+            background = ComposeColor(0xFF000000),
+            surface = ComposeColor(0xFF000000),
+            surfaceContainer = ComposeColor(0xFF121212),
+            surfaceContainerHigh = ComposeColor(0xFF1A1A1A),
+            surfaceContainerHighest = ComposeColor(0xFF222222),
+        )
+        supportsDynamic && !isDark -> dynamicLightColorScheme(context)
+        isDark -> AmoledDarkColorScheme
+        else -> lightColorScheme()
+    }
+
     MaterialTheme(colorScheme = colorScheme) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize().safeDrawingPadding().padding(if (isTv) 32.dp else 16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text("Android ART Optimizer", style = MaterialTheme.typography.headlineSmall)
                     RemoteIconButton(
@@ -112,19 +130,64 @@ private fun OptimizerApp(model: OptimizerViewModel = viewModel()) {
                         ThemeToggleIcon(isDark = isDark)
                     }
                 }
-                val endpoint = state.endpoint
-                Text(if (state.connection == ConnectionPhase.CONNECTED && endpoint != null)
-                    "Connected over ${LocalConnectionPolicy.connectionLabel(endpoint, state.network)}"
-                    else "ADB: ${state.connection.name.replace('_', ' ').lowercase()} · ${state.network.label}")
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("Device", "Apps", "Diagnostics", "Advanced").forEachIndexed { index, label ->
-                        val focusModifier = Modifier.focusRequester(tabFocus[index])
-                        if (index == tab) RemoteButton(onClick = { tab = index }, modifier = focusModifier) { Text(label) }
-                        else RemoteOutlinedButton(onClick = { tab = index }, modifier = focusModifier) { Text(label) }
+
+                val connected = state.connection == ConnectionPhase.CONNECTED && state.endpoint != null
+                val searching = state.connection in setOf(ConnectionPhase.SEARCHING_CONNECT, ConnectionPhase.CONNECTING)
+                val statusDot = when {
+                    connected -> ComposeColor(0xFF4CAF50)
+                    searching -> ComposeColor(0xFFFFB300)
+                    else -> MaterialTheme.colorScheme.outline
+                }
+                val statusText = when {
+                    connected -> "Connected over ${LocalConnectionPolicy.connectionLabel(state.endpoint!!, state.network)}"
+                    searching -> "Searching for Wireless Debugging"
+                    state.connection == ConnectionPhase.NOT_PAIRED -> "Not paired"
+                    state.connection == ConnectionPhase.UNAVAILABLE -> "Disconnected"
+                    else -> state.connection.name.replace('_', ' ').lowercase()
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Box(Modifier.size(8.dp).clip(CircleShape).background(statusDot))
+                        Text(statusText, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
+
+                Spacer(Modifier.height(4.dp))
+
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val tabPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                    listOf("Device", "Apps", "Diagnostics", "Console").forEachIndexed { index, label ->
+                        val focusModifier = Modifier.focusRequester(tabFocus[index])
+                        if (index == tab) {
+                            RemoteButton(
+                                onClick = { tab = index },
+                                modifier = focusModifier,
+                                contentPadding = tabPadding,
+                            ) { Text(label) }
+                        } else {
+                            RemoteOutlinedButton(
+                                onClick = { tab = index },
+                                modifier = focusModifier,
+                                contentPadding = tabPadding,
+                            ) { Text(label) }
+                        }
+                    }
+                }
+
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
                 when (tab) {
                     0 -> DevicePage(state, model, isTv)
                     1 -> AppsPage(state, model, isDark)
@@ -153,18 +216,30 @@ private fun RemoteButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    contentPadding: PaddingValues = ButtonDefaults.ContentPadding,
     content: @Composable RowScope.() -> Unit,
-) = Button(onClick = onClick, modifier = modifier.then(remoteFocusModifier()), enabled = enabled,
-    content = content)
+) = Button(
+    onClick = onClick,
+    modifier = modifier.then(remoteFocusModifier()),
+    enabled = enabled,
+    contentPadding = contentPadding,
+    content = content,
+)
 
 @Composable
 private fun RemoteOutlinedButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    contentPadding: PaddingValues = ButtonDefaults.ContentPadding,
     content: @Composable RowScope.() -> Unit,
-) = OutlinedButton(onClick = onClick, modifier = modifier.then(remoteFocusModifier()),
-    enabled = enabled, content = content)
+) = OutlinedButton(
+    onClick = onClick,
+    modifier = modifier.then(remoteFocusModifier()),
+    enabled = enabled,
+    contentPadding = contentPadding,
+    content = content,
+)
 
 @Composable
 private fun RemoteIconButton(
@@ -290,17 +365,27 @@ private fun DevicePage(state: UiState, model: OptimizerViewModel, isTv: Boolean)
     var showPairingOptions by rememberSaveable { mutableStateOf(false) }
     var settingsUnavailable by rememberSaveable { mutableStateOf(false) }
     Text("Device and connection", style = MaterialTheme.typography.titleLarge)
-    state.profile?.let { Text(it.displayName) }
-    Text("Network: ${state.network.label}")
-    state.endpoint?.let { Text("ADB connection: ${it.kind.label}") }
-    Text(state.detail.ifBlank { "Enable Wireless Debugging in Developer Options." })
-    if (state.networkNotice.isNotBlank()) Text(state.networkNotice)
-    if (state.network.hasEthernet) {
-        Text("Ethernet is detected automatically. On supported TVs, enable USB debugging in Developer Options and accept Android's authorization prompt for this app. Ethernet ADB is unencrypted; use a trusted local network.")
+
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(state.profile?.displayName ?: "Android Device", style = MaterialTheme.typography.titleMedium)
+            Text("Network: ${state.network.label}")
+            state.endpoint?.let { Text("ADB connection: ${it.kind.label}") }
+            Text(state.detail.ifBlank { "Enable Wireless Debugging in Developer Options." })
+            if (state.networkNotice.isNotBlank()) Text(state.networkNotice)
+            if (state.network.hasEthernet) {
+                Text("Ethernet is detected automatically. On supported TVs, enable USB debugging in Developer Options and accept Android's authorization prompt for this app.")
+            }
+        }
     }
+
     if (state.connection == ConnectionPhase.CONNECTED) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             RemoteOutlinedButton(onClick = model::retry) { Text("Reconnect") }
+            RemoteOutlinedButton(onClick = model::disconnectAndTurnOffWirelessDebugging) { Text("Disconnect & Turn off ADB") }
             RemoteOutlinedButton(onClick = model::pairAgain,
                 enabled = state.pairingSession.status !in setOf(PairingStatus.STARTING,
                     PairingStatus.READY, PairingStatus.PAIRING)) { Text("Pair Again") }
@@ -415,107 +500,272 @@ private fun PairingQr(url: String) {
 private fun AppsPage(state: UiState, model: OptimizerViewModel, isDark: Boolean) = Page {
     val connected = state.connection == ConnectionPhase.CONNECTED
     val context = LocalContext.current
-    Text("Configured applications", style = MaterialTheme.typography.titleLarge)
     var entry by rememberSaveable { mutableStateOf("") }
-    AppTextInput(value = entry, onValueChange = { entry = it },
-        label = "Package ID or comma-separated list", minLines = 2)
-    RemoteButton(onClick = { model.addPackages(entry); entry = "" }, enabled = entry.isNotBlank()) { Text("Add packages") }
-    if (state.entryFeedback.isNotBlank()) Text(state.entryFeedback)
+    var filter by rememberSaveable { mutableStateOf("") }
+    var showDiscovered by rememberSaveable { mutableStateOf(false) }
+
     val needed = remember(state.configured, state.installed, state.records, state.versions) {
         pendingPackages(state.configured, state.installed, state.versions, state.records)
     }
     val installedConfigured = remember(state.configured, state.installed) {
         state.configured.filter { it in state.installed }
     }
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        RemoteButton(
-            onClick = model::optimizeNeeded,
-            enabled = connected && state.compileAvailable && !state.running && needed.isNotEmpty()
-        ) {
-            Text("Optimize needed (${needed.size})")
-        }
-        RemoteOutlinedButton(
-            onClick = { model.optimize(installedConfigured) },
-            enabled = connected && state.compileAvailable && !state.running && installedConfigured.isNotEmpty()
-        ) {
-            Text("Optimize all (${installedConfigured.size})")
-        }
-        RemoteOutlinedButton(onClick = model::refreshApps, enabled = connected) { Text("Refresh") }
-    }
-    state.activeEvent?.let { event ->
-        Text("${event.completed}/${event.total} completed • ${event.packageId.value} • ${event.phase}")
-        if (event.message.isNotBlank()) Text(event.message)
-        if (event.phase == OptimizationPhase.COMPILING && state.running) {
-            CircularProgressIndicator()
-            ElapsedText(event.atMillis, true)
-        }
-    }
-    if (state.configured.isEmpty()) Text("Add a package manually or choose an installed app below.")
-    state.configured.forEach { id ->
-        val installed = state.versions[id]
-        val record = state.records[id]
-        val label = remember(id) {
-            runCatching {
-                val info = context.packageManager.getApplicationInfo(id.value, 0)
-                context.packageManager.getApplicationLabel(info).toString()
-            }.getOrNull()?.takeUnless { it == id.value }
-        }
-        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = if (isDark) ComposeColor(0xFF121212) else MaterialTheme.colorScheme.surfaceVariant)) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (label != null) Text(label, style = MaterialTheme.typography.titleMedium)
-                Text(id.value, style = MaterialTheme.typography.titleMedium)
-                Text(if (id in state.installed) "Installed • ${installed?.versionName ?: "version unknown"}"
-                    else "Missing / not installed")
-                val liveFilter = installed?.compilerFilter
-                if (liveFilter != null) {
-                    val filterDescription = if (liveFilter == "speed") "Compiler status: speed (optimized)"
-                        else "Compiler status: $liveFilter"
-                    Text(filterDescription)
-                }
-                if (record != null) {
-                    Text("Last: ${record.result} • " +
-                        DateFormat.getDateTimeInstance().format(Date(record.timestampMillis)))
-                    if (record.result == "Success") {
-                        val validationDescription = when (record.validationLevel) {
-                            ValidationLevel.ART_STATE -> "Verified via ART runtime status"
-                            ValidationLevel.COMMAND -> "Verified via package compiler exit status"
-                        }
-                        Text("Validation: $validationDescription")
-                    }
-                    if (record.lastSuccessfulAtMillis != null && record.lastSuccessfulAtMillis != record.timestampMillis)
-                        Text("Last successful optimization: " + DateFormat.getDateTimeInstance()
-                            .format(Date(record.lastSuccessfulAtMillis)))
-                    if (updatedSinceOptimization(installed?.versionCode, record))
-                        Text("Updated since optimization — run it again")
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    RemoteButton(onClick = { model.optimize(listOf(id)) },
-                        enabled = connected && state.compileAvailable && !state.running && id in state.installed) {
-                        Text("Optimize")
-                    }
-                    RemoteOutlinedButton(onClick = { model.removePackage(id) }) { Text("Remove") }
-                }
-            }
-        }
-    }
-    HorizontalDivider()
-    Text("Installed third-party packages", style = MaterialTheme.typography.titleMedium)
-    if (!connected) Text("Connect to discover installed applications.")
-    var filter by rememberSaveable { mutableStateOf("") }
-    AppTextInput(value = filter, onValueChange = { filter = it }, label = "Filter packages")
     val unconfigured = remember(state.installed, state.configured, filter) {
         state.installed.filter { it !in state.configured && it.value.contains(filter, ignoreCase = true) }
     }
-    if (unconfigured.isNotEmpty()) {
-        RemoteOutlinedButton(onClick = { model.addPackages(unconfigured.joinToString(",") { it.value }) }) {
-            Text("Add all ${if (filter.isNotBlank()) "filtered" else "third-party"} (${unconfigured.size})")
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        FilterChip(
+            selected = !showDiscovered,
+            onClick = { showDiscovered = false },
+            label = { Text("Configured (${state.configured.size})") },
+        )
+        FilterChip(
+            selected = showDiscovered,
+            onClick = { showDiscovered = true },
+            label = { Text("Discovered (${state.installed.count { it !in state.configured }})") },
+        )
+    }
+
+    if (!showDiscovered) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            RemoteButton(
+                onClick = model::optimizeNeeded,
+                enabled = connected && state.compileAvailable && !state.running && !state.scanningArtState && needed.isNotEmpty()
+            ) {
+                if (state.scanningArtState) {
+                    val (done, total) = state.scanProgress ?: (0 to state.configured.size)
+                    Text("Checking status ($done/$total)")
+                } else {
+                    Text("Optimize needed (${needed.size})")
+                }
+            }
+            RemoteOutlinedButton(
+                onClick = { model.optimize(installedConfigured) },
+                enabled = connected && state.compileAvailable && !state.running && !state.scanningArtState && installedConfigured.isNotEmpty()
+            ) {
+                Text("Optimize all (${installedConfigured.size})")
+            }
+            RemoteOutlinedButton(
+                onClick = model::refreshApps,
+                enabled = connected && !state.running && !state.scanningArtState
+            ) {
+                Text(if (state.scanningArtState) "Scanning..." else "Refresh")
+            }
+            RemoteOutlinedButton(
+                onClick = model::clearConfigured,
+                enabled = state.configured.isNotEmpty() && !state.running && !state.scanningArtState
+            ) {
+                Text("Remove all (${state.configured.size})")
+            }
+        }
+        if (state.scanningArtState) {
+            val (done, total) = state.scanProgress ?: (0 to 1)
+            val progress = if (total > 0) done.toFloat() / total.toFloat() else 0f
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = entry,
+                onValueChange = { entry = it },
+                label = { Text("Add package ID or CSV") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            RemoteButton(
+                onClick = { model.addPackages(entry); entry = "" },
+                enabled = entry.isNotBlank(),
+            ) {
+                Text("Add")
+            }
+        }
+        if (state.entryFeedback.isNotBlank()) Text(state.entryFeedback, style = MaterialTheme.typography.bodySmall)
+
+        state.activeEvent?.let { event ->
+            Card(
+                Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("${event.completed}/${event.total} completed • ${event.packageId.value}", style = MaterialTheme.typography.titleMedium)
+                    if (event.message.isNotBlank()) Text(event.message, style = MaterialTheme.typography.bodyMedium)
+                    if (event.phase == OptimizationPhase.COMPILING && state.running) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        ElapsedText(event.atMillis, true)
+                    }
+                }
+            }
+        }
+
+        if (state.configured.isEmpty()) {
+            Text("No packages configured. Switch to the Discovered tab to add apps installed on this device.")
+        }
+
+        state.configured.forEach { id ->
+            val installed = state.versions[id]
+            val record = state.records[id]
+            val label = remember(id) {
+                runCatching {
+                    val info = context.packageManager.getApplicationInfo(id.value, 0)
+                    context.packageManager.getApplicationLabel(info).toString()
+                }.getOrNull()?.takeUnless { it == id.value }
+            }
+            Card(
+                Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = if (isDark) ComposeColor(0xFF121212) else MaterialTheme.colorScheme.surfaceVariant),
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            if (label != null) Text(label, style = MaterialTheme.typography.titleMedium)
+                            Text(id.value,
+                                style = if (label != null) MaterialTheme.typography.bodySmall else MaterialTheme.typography.titleMedium,
+                                color = if (label != null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
+                        }
+                        val liveFilter = installed?.compilerFilter
+                        if (id !in state.installed) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.errorContainer,
+                            ) {
+                                Text("Not installed", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                            }
+                        } else if (liveFilter != null) {
+                            val isSpeed = liveFilter == "speed"
+                            val isProfile = liveFilter.contains("profile")
+                            val badgeBg = when {
+                                isSpeed -> MaterialTheme.colorScheme.primaryContainer
+                                isProfile -> MaterialTheme.colorScheme.tertiaryContainer
+                                else -> MaterialTheme.colorScheme.surfaceContainerHighest
+                            }
+                            val badgeFg = when {
+                                isSpeed -> MaterialTheme.colorScheme.onPrimaryContainer
+                                isProfile -> MaterialTheme.colorScheme.onTertiaryContainer
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            Surface(shape = RoundedCornerShape(8.dp), color = badgeBg) {
+                                Text(
+                                    if (isSpeed) "✓ speed (optimized)" else liveFilter,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = badgeFg
+                                )
+                            }
+                        } else if (state.scanningArtState) {
+                            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+                                Text(
+                                    "Scanning...",
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        if (id in state.installed) "Installed • v${installed?.versionName ?: "unknown"}"
+                        else "Missing from device",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
+                    if (record != null) {
+                        Text(
+                            "Last: ${record.result} • " +
+                                DateFormat.getDateTimeInstance().format(Date(record.timestampMillis)),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        if (record.result == "Success") {
+                            val validationDesc = when (record.validationLevel) {
+                                ValidationLevel.ART_STATE -> "Verified via ART runtime status"
+                                ValidationLevel.COMMAND -> "Verified via package compiler exit status"
+                            }
+                            Text("Validation: $validationDesc", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (updatedSinceOptimization(installed?.versionCode, record)) {
+                            Text("App updated since optimization — run it again",
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RemoteButton(
+                            onClick = { model.optimize(listOf(id)) },
+                            enabled = connected && state.compileAvailable && !state.running && id in state.installed
+                        ) {
+                            Text("Optimize")
+                        }
+                        RemoteOutlinedButton(onClick = { model.removePackage(id) }) { Text("Remove") }
+                    }
+                }
+            }
+        }
+    } else {
+        Card(
+            Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Installed User Apps", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Found ${unconfigured.size} unconfigured user apps on this device.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                if (unconfigured.isNotEmpty()) {
+                    RemoteButton(
+                        onClick = { model.addPackages(unconfigured.joinToString(",") { it.value }) },
+                    ) {
+                        Text("Add all ${if (filter.isNotBlank()) "filtered" else "user apps"} (${unconfigured.size})")
+                    }
+                }
+            }
+        }
+
+        AppTextInput(value = filter, onValueChange = { filter = it }, label = "Search user apps")
+        unconfigured.take(100).forEach { id ->
+                val label = remember(id) {
+                    runCatching {
+                        val info = context.packageManager.getApplicationInfo(id.value, 0)
+                        context.packageManager.getApplicationLabel(info).toString()
+                    }.getOrNull()?.takeUnless { it == id.value }
+                }
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = if (isDark) ComposeColor(0xFF121212) else MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            if (label != null) Text(label, style = MaterialTheme.typography.titleMedium)
+                            Text(id.value, style = if (label != null) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium)
+                        }
+                        RemoteOutlinedButton(onClick = { model.addPackages(id.value) }) {
+                            Text("Add")
+                        }
+                    }
+                }
+            }
+            if (unconfigured.size > 100) {
+                Text("Showing first 100 results. Use the filter to search.")
+            }
         }
     }
-    unconfigured.take(100).forEach { id ->
-        RemoteOutlinedButton(onClick = { model.addPackages(id.value) }) { Text("Add ${id.value}") }
-    }
-    if (unconfigured.size > 100) Text("Showing up to 100 results. Filter to narrow the list.")
-}
 
 @Composable
 private fun ElapsedText(startedAt: Long, active: Boolean) {
@@ -532,21 +782,34 @@ private fun ElapsedText(startedAt: Long, active: Boolean) {
 @Composable
 private fun DiagnosticsPage(state: UiState, model: OptimizerViewModel) = Page {
     Text("Diagnostics", style = MaterialTheme.typography.titleLarge)
-    Text("Connection: ${state.connection}")
-    Text("Network: ${state.network.label}")
-    Text("ADB path: ${state.endpoint?.kind?.label ?: "not connected"}")
-    Text("Discovery service: ${state.discoveryStatus}" +
-        if (state.connection == ConnectionPhase.CONNECTED) " (runs in the background while connected)" else "")
-    Text("Pairing endpoints: ${state.pairingEndpoints.size}; connect endpoints: ${state.connectEndpoints.size}")
-    state.profile?.let {
-        Text("Device: ${it.displayName}; SDK ${it.sdk}")
-        Text(if (it.strongIdentity) "Identity: stable shell identifier available"
-            else "Identity: weaker manufacturer/model/SDK fingerprint")
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Connection & Transport", style = MaterialTheme.typography.titleMedium)
+            Text("Status: ${state.connection}")
+            Text("Network: ${state.network.label}")
+            Text("ADB path: ${state.endpoint?.kind?.label ?: "not connected"}")
+            Text("Discovery: ${state.discoveryStatus}" +
+                if (state.connection == ConnectionPhase.CONNECTED) " (runs in background)" else "")
+            Text("Endpoints: ${state.connectEndpoints.size} connect, ${state.pairingEndpoints.size} pair")
+            Text("Shell UID: ${state.shellUid.ifBlank { "unavailable" }}")
+            Text("Auto-enable Wireless ADB: " +
+                if (state.secureSettingsGranted) "Granted (automatic background enable active)"
+                else "Not granted (connect once via Wireless Debugging to activate)")
+        }
     }
-    Text("Shell UID: ${state.shellUid.ifBlank { "unavailable" }}")
-    Text("Compile command: ${if (state.compileAvailable) "available" else "unavailable"}")
-    Text("ART inspection: ${if (state.artAvailable) "available" else "unavailable; compilation uses command validation"}")
-    RemoteOutlinedButton(onClick = model::retry) { Text("Retry") }
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("ART Capabilities", style = MaterialTheme.typography.titleMedium)
+            state.profile?.let {
+                Text("Device: ${it.displayName} (SDK ${it.sdk})")
+                Text(if (it.strongIdentity) "Identity: stable shell identifier verified"
+                    else "Identity: model/SDK fingerprint")
+            }
+            Text("Compile command: ${if (state.compileAvailable) "Available (cmd package compile)" else "Unavailable"}")
+            Text("ART inspection: ${if (state.artAvailable) "Available (pm art dump)" else "Unavailable (fallback to exit status)"}")
+        }
+    }
+    RemoteOutlinedButton(onClick = model::retry) { Text("Retry connection") }
 }
 
 @Composable
